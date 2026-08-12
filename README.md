@@ -4,11 +4,8 @@ PatchPilot is a safety-first coding assistant that turns a software task into
 a reviewable plan, inspects a local repository, runs only approved commands,
 and leaves the final change under human control.
 
-This project is an original implementation informed by the tool-loop ideas in
-[mini-SWE-agent](https://github.com/SWE-agent/mini-swe-agent). It does not copy
-the upstream repository. The first milestone is deterministic; an LLM planner
-and bounded edit/recovery loop will be added only after the safety boundary is
-tested.
+The first milestone is deterministic; an LLM planner and bounded edit/recovery
+loop will be added only after the safety boundary is tested.
 
 ## Day 1 scope
 
@@ -61,9 +58,3 @@ BLOCKED: git reset is blocked
 2. Add one bounded test-failure recovery attempt.
 3. Add issue input and a small coding-task evaluation set.
 4. Add an optional model provider behind the same safety policy.
-
-## Attribution
-
-PatchPilot is an independent project. It is informed by public ideas from
-mini-SWE-agent and other SWE-agent research; no upstream source files are
-included in this milestone.
