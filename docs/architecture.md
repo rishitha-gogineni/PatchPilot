@@ -5,10 +5,13 @@ flowchart LR
     Task[Task or issue] --> Planner[Plan + approval gate]
     Planner --> Inspector[Repository inspector]
     Inspector --> Tools[Allow-listed tools]
-    Tools --> Tests[Test runner with timeout]
-    Tests --> Review[Diff + human review]
+    Tools --> Edit[Approved file edit + diff]
+    Edit --> Tests[Test runner with timeout]
+    Tests --> Recovery[At most one recovery callback]
+    Recovery --> Review[Diff + human review]
     Review -->|approved later| Commit[Explicit user action]
 ```
 
-Day 1 deliberately stops before autonomous editing, commits, or pushes. The
-approval gate and tool policy are the foundation for later LLM integration.
+The current execution layer stops before autonomous commits or pushes. Every
+edit requires approval, tests are time-bounded, and recovery is limited to one
+callback. A future model planner must operate inside these boundaries.

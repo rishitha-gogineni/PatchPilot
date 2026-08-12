@@ -7,7 +7,7 @@ and leaves the final change under human control.
 The first milestone is deterministic; an LLM planner and bounded edit/recovery
 loop will be added only after the safety boundary is tested.
 
-## Day 1 scope
+## Current scope (Days 1–3)
 
 - Python CLI for repository inspection and task planning
 - Repository-root path containment checks
@@ -16,6 +16,9 @@ loop will be added only after the safety boundary is tested.
 - Test execution with a timeout
 - Approval-required plan model
 - Unit tests for safety and inspection boundaries
+- Approval-gated file editing with a unified diff preview
+- Repository-local JSONL run logs with no source-content capture
+- Test execution with timeout handling and one bounded recovery callback
 
 ## Architecture
 
@@ -25,8 +28,9 @@ See [docs/architecture.md](docs/architecture.md). The intended workflow is:
 task → inspect → propose plan → approve → edit → test → bounded recovery → review diff
 ```
 
-The Day 1 CLI stops at the plan and safe command runner. It never commits,
-pushes, resets, cleans, or deletes files automatically.
+PatchPilot never commits, pushes, resets, cleans, or deletes files
+automatically. A recovery callback is supplied by a future model planner; the
+execution layer itself enforces the one-attempt limit.
 
 ## Local setup
 
@@ -43,6 +47,19 @@ Try it against a repository:
 patchpilot inspect /path/to/repository
 patchpilot plan "Fix the failing parser tests" --repo /path/to/repository
 patchpilot run "git status --short" --repo /path/to/repository
+patchpilot edit src/app.py --content-file /tmp/app.py.new --repo /path/to/repository
+patchpilot test "python -m pytest" --repo /path/to/repository
+patchpilot logs --repo /path/to/repository
+```
+
+For a bounded recovery attempt, provide a reviewed replacement file and an
+explicit recovery approval. PatchPilot applies it at most once before rerunning
+the test command:
+
+```bash
+patchpilot test "python -m pytest" --repo /path/to/repository \
+  --recovery-content-file /tmp/repaired.py \
+  --recovery-path src/app.py --approve-recovery
 ```
 
 Unsafe commands are rejected before a subprocess starts:
@@ -52,9 +69,11 @@ $ patchpilot run "git reset --hard"
 BLOCKED: git reset is blocked
 ```
 
+An edit without `--approve` prints the diff and changes nothing. Run tests are
+captured in `.patchpilot/runs.jsonl`, which is ignored by Git.
+
 ## Roadmap
 
-1. Add approval-gated file edits and JSONL run logs.
-2. Add one bounded test-failure recovery attempt.
-3. Add issue input and a small coding-task evaluation set.
-4. Add an optional model provider behind the same safety policy.
+1. Add issue input and a small coding-task evaluation set.
+2. Add an optional model provider behind the same safety policy.
+3. Add a lightweight interactive UI after the CLI workflow is stable.

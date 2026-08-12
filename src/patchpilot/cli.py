@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
+from .editor import EditDenied, apply_edit, preview_edit
 from .inspector import RepositoryInspector
+from .logging import JsonlRunLogger
+from .orchestrator import run_test_loop
 from .planner import make_plan
 from .safety import UnsafeCommand, run_safe
 
@@ -17,9 +21,24 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("task")
     plan.add_argument("--repo", type=Path, default=Path.cwd())
     check = subparsers.add_parser("run", help="run one allow-listed command")
-    check.add_argument("command")
+    check.add_argument("command_text")
     check.add_argument("--repo", type=Path, default=Path.cwd())
     check.add_argument("--timeout", type=float, default=30.0)
+    edit = subparsers.add_parser("edit", help="preview and optionally apply one approved file edit")
+    edit.add_argument("file")
+    edit.add_argument("--content-file", type=Path, required=True)
+    edit.add_argument("--repo", type=Path, default=Path.cwd())
+    edit.add_argument("--approve", action="store_true")
+    logs = subparsers.add_parser("logs", help="show recent structured run events")
+    logs.add_argument("--repo", type=Path, default=Path.cwd())
+    logs.add_argument("--limit", type=int, default=20)
+    test = subparsers.add_parser("test", help="run a test command with one optional recovery callback")
+    test.add_argument("test_command")
+    test.add_argument("--repo", type=Path, default=Path.cwd())
+    test.add_argument("--timeout", type=float, default=60.0)
+    test.add_argument("--recovery-content-file", type=Path)
+    test.add_argument("--recovery-path")
+    test.add_argument("--approve-recovery", action="store_true")
     return parser
 
 
@@ -41,8 +60,57 @@ def main(argv: list[str] | None = None) -> int:
         for step in task_plan.steps:
             print(f"{step.order}. {step.action} — {step.rationale}")
         return 0
+    logger = JsonlRunLogger.for_repository(args.repo) if args.command in {"edit", "test"} else None
+    if args.command == "edit":
+        try:
+            new_content = args.content_file.read_text(encoding="utf-8")
+            diff = preview_edit(args.repo, args.file, new_content)
+            print(diff or "No changes.")
+            if not args.approve:
+                print("Approval required; no files changed.")
+                return 3
+            applied_diff = apply_edit(args.repo, args.file, new_content, approved=True)
+            logger.record("edit_applied", path=args.file, changed=bool(applied_diff))
+            print("Edit applied.")
+            return 0
+        except (EditDenied, ValueError, OSError) as exc:
+            if logger:
+                logger.record("edit_blocked", path=args.file, reason=str(exc))
+            print(f"EDIT BLOCKED: {exc}")
+            return 2
+    if args.command == "logs":
+        for event in JsonlRunLogger.for_repository(args.repo).tail(args.limit):
+            print(json.dumps(event, sort_keys=True))
+        return 0
+    if args.command == "test":
+        recovery = None
+        if args.recovery_content_file or args.recovery_path or args.approve_recovery:
+            if not (args.recovery_content_file and args.recovery_path and args.approve_recovery):
+                print("TEST BLOCKED: recovery requires --recovery-content-file, --recovery-path, and --approve-recovery")
+                logger.record("recovery_blocked", reason="missing recovery approval or target")
+                return 2
+
+            def recovery() -> bool:
+                content = args.recovery_content_file.read_text(encoding="utf-8")
+                diff = apply_edit(args.repo, args.recovery_path, content, approved=True)
+                logger.record("recovery_edit_applied", path=args.recovery_path, changed=bool(diff))
+                return True
+
+        try:
+            summary = run_test_loop(args.repo, args.test_command, timeout=args.timeout, recovery=recovery, logger=logger.record)
+        except (UnsafeCommand, ValueError) as exc:
+            logger.record("test_blocked", command=args.test_command, reason=str(exc))
+            print(f"TEST BLOCKED: {exc}")
+            return 2
+        final = summary.recovery if summary.recovery_attempted else summary.initial
+        print(final.stdout, end="")
+        if final.stderr:
+            print(final.stderr, end="")
+        print(f"Test success: {'yes' if summary.success else 'no'}")
+        print(f"Recovery attempted: {'yes' if summary.recovery_attempted else 'no'}")
+        return final.returncode
     try:
-        result = run_safe(args.command, args.repo, args.timeout)
+        result = run_safe(args.command_text, args.repo, args.timeout)
     except (UnsafeCommand, ValueError) as exc:
         print(f"BLOCKED: {exc}")
         return 2

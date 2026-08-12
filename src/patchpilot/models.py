@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,6 +35,18 @@ class CommandResult:
     stdout: str
     stderr: str
     timed_out: bool = False
+
+
+@dataclass(frozen=True)
+class TestRunSummary:
+    initial: CommandResult
+    recovery: CommandResult | None = None
+    recovery_attempted: bool = False
+
+    @property
+    def success(self) -> bool:
+        result = self.recovery if self.recovery_attempted and self.recovery is not None else self.initial
+        return result.returncode == 0 and not result.timed_out
 
 
 @dataclass
