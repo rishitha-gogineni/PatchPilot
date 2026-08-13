@@ -19,6 +19,7 @@ loop will be added only after the safety boundary is tested.
 - Approval-gated file editing with a unified diff preview
 - Repository-local JSONL run logs with no source-content capture
 - Test execution with timeout handling and one bounded recovery callback
+- Optional structured LLM planning with OpenAI-compatible output validation
 
 ## Architecture
 
@@ -50,6 +51,7 @@ patchpilot run "git status --short" --repo /path/to/repository
 patchpilot edit src/app.py --content-file /tmp/app.py.new --repo /path/to/repository
 patchpilot test "python -m pytest" --repo /path/to/repository
 patchpilot logs --repo /path/to/repository
+patchpilot llm-plan "Fix the failing parser tests" --repo /path/to/repository
 ```
 
 For a bounded recovery attempt, provide a reviewed replacement file and an
@@ -72,8 +74,26 @@ BLOCKED: git reset is blocked
 An edit without `--approve` prints the diff and changes nothing. Run tests are
 captured in `.patchpilot/runs.jsonl`, which is ignored by Git.
 
+### Optional model planner
+
+The model planner receives the task, repository markers, detected test
+commands, and a bounded file-name summary. It does not receive source files,
+execute tools, or edit the repository. Its JSON plan is validated before it is
+shown for approval. Install the optional dependency and configure the model
+only when you are ready to make a live API call:
+
+```bash
+python -m pip install -e ".[llm]"
+export OPENAI_API_KEY="..."
+export PATCHPILOT_MODEL="gpt-4o-mini"
+patchpilot llm-plan "Fix the failing parser tests" --repo /path/to/repository
+```
+
+API-key-free mock tests cover the provider and schema boundary. The key is
+needed only for the `llm-plan` command.
+
 ## Roadmap
 
 1. Add issue input and a small coding-task evaluation set.
-2. Add an optional model provider behind the same safety policy.
+2. Connect approved model plans to a bounded edit proposal workflow.
 3. Add a lightweight interactive UI after the CLI workflow is stable.

@@ -29,6 +29,22 @@ class TaskPlan:
 
 
 @dataclass(frozen=True)
+class ModelPlan:
+    goal: str
+    files_to_inspect: tuple[str, ...]
+    proposed_changes: tuple[str, ...]
+    test_command: str | None
+    risks: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PlannerResult:
+    plan: ModelPlan
+    model: str
+    usage: dict[str, int]
+
+
+@dataclass(frozen=True)
 class CommandResult:
     command: str
     returncode: int

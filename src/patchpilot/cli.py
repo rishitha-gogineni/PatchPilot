@@ -7,6 +7,7 @@ from pathlib import Path
 from .editor import EditDenied, apply_edit, preview_edit
 from .inspector import RepositoryInspector
 from .logging import JsonlRunLogger
+from .llm import OpenAIPlanner, PlannerError, plan_to_dict
 from .orchestrator import run_test_loop
 from .planner import make_plan
 from .safety import UnsafeCommand, run_safe
@@ -39,6 +40,10 @@ def _parser() -> argparse.ArgumentParser:
     test.add_argument("--recovery-content-file", type=Path)
     test.add_argument("--recovery-path")
     test.add_argument("--approve-recovery", action="store_true")
+    ai_plan = subparsers.add_parser("llm-plan", help="generate a structured plan with the configured model")
+    ai_plan.add_argument("task")
+    ai_plan.add_argument("--repo", type=Path, default=Path.cwd())
+    ai_plan.add_argument("--model")
     return parser
 
 
@@ -59,6 +64,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Task: {task_plan.task}\nRepository: {task_plan.repository}\nApproval required: yes")
         for step in task_plan.steps:
             print(f"{step.order}. {step.action} — {step.rationale}")
+        return 0
+    if args.command == "llm-plan":
+        try:
+            inspection = inspector.inspect(args.repo)
+            result = OpenAIPlanner(model=args.model).create_plan(args.task, inspection)
+        except (PlannerError, ValueError) as exc:
+            print(f"LLM PLAN BLOCKED: {exc}")
+            return 2
+        JsonlRunLogger.for_repository(args.repo).record(
+            "model_plan_created", model=result.model, **result.usage,
+        )
+        print(json.dumps(plan_to_dict(result), indent=2, sort_keys=True))
+        print("Approval required before any edit or command execution.")
         return 0
     logger = JsonlRunLogger.for_repository(args.repo) if args.command in {"edit", "test"} else None
     if args.command == "edit":
