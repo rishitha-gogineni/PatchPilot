@@ -7,7 +7,7 @@ import os
 from dataclasses import asdict
 from typing import Any, Protocol
 
-from .models import Inspection, ModelPlan, PlannerResult
+from .models import EditProposal, Inspection, ModelPlan, PlannerResult, ProposalResult
 
 
 class PlannerError(ValueError):
@@ -117,3 +117,70 @@ class OpenAIPlanner:
 
 def plan_to_dict(result: PlannerResult) -> dict[str, Any]:
     return {"model": result.model, "usage": result.usage, "plan": asdict(result.plan)}
+
+
+def validate_edit_proposal(payload: Any, inspection: Inspection, allowed_files: tuple[str, ...]) -> EditProposal:
+    if not isinstance(payload, dict):
+        raise PlannerError("model proposal must be a JSON object")
+    path = _required_string(payload.get("path"), "path")
+    if path not in allowed_files or path not in inspection.files:
+        raise PlannerError("proposal path was not explicitly selected for review")
+    new_content = payload.get("new_content")
+    if not isinstance(new_content, str) or len(new_content.encode("utf-8")) > 500_000:
+        raise PlannerError("proposal new_content must be text under 500KB")
+    explanation = _required_string(payload.get("explanation"), "explanation")
+    risks = _string_list(payload.get("risks"), "risks")
+    test_command = payload.get("test_command")
+    if test_command is not None and (not isinstance(test_command, str) or not test_command.strip()):
+        raise PlannerError("proposal test_command must be a string or null")
+    if test_command and inspection.test_commands and test_command.strip() not in inspection.test_commands:
+        raise PlannerError("proposal test command was not detected in the repository")
+    return EditProposal(path, new_content, explanation, risks, test_command.strip() if test_command else None)
+
+
+def proposal_to_dict(result: ProposalResult) -> dict[str, Any]:
+    return {"model": result.model, "usage": result.usage, "proposal": asdict(result.proposal)}
+
+
+def build_proposal_context(task: str, inspection: Inspection, selected_files: tuple[str, ...], file_contents: dict[str, str]) -> str:
+    if not task.strip():
+        raise PlannerError("task cannot be empty")
+    if not selected_files or any(path not in inspection.files for path in selected_files):
+        raise PlannerError("proposal files must come from the inspected repository")
+    return json.dumps({
+        "task": task.strip(),
+        "project_type": inspection.project_type,
+        "selected_files": [{"path": path, "content": file_contents[path]} for path in selected_files],
+        "detected_test_commands": list(inspection.test_commands),
+    }, sort_keys=True)
+
+
+def _usage(response: Any) -> dict[str, int]:
+    raw_usage = getattr(response, "usage", None)
+    return {
+        "input_tokens": int(getattr(raw_usage, "prompt_tokens", 0) or 0),
+        "output_tokens": int(getattr(raw_usage, "completion_tokens", 0) or 0),
+    }
+
+
+def create_edit_proposal(planner: OpenAIPlanner, task: str, inspection: Inspection, selected_files: tuple[str, ...], file_contents: dict[str, str]) -> ProposalResult:
+    context = build_proposal_context(task, inspection, selected_files, file_contents)
+    system = (
+        "You are PatchPilot's patch proposal component. Return only JSON with keys "
+        "path, new_content, explanation, risks, test_command. Return one complete-file "
+        "proposal for exactly one selected path. Do not run tools or include markdown."
+    )
+    try:
+        response = planner.client.chat.completions.create(
+            model=planner.model,
+            temperature=0,
+            max_tokens=4000,
+            response_format={"type": "json_object"},
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": context}],
+        )
+        payload = json.loads(response.choices[0].message.content)
+    except PlannerError:
+        raise
+    except Exception as exc:
+        raise PlannerError(f"model proposal request failed: {type(exc).__name__}") from exc
+    return ProposalResult(validate_edit_proposal(payload, inspection, selected_files), planner.model, _usage(response))

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from patchpilot.llm import OpenAIPlanner, PlannerError, build_planner_context, validate_model_plan
+from patchpilot.llm import OpenAIPlanner, PlannerError, build_planner_context, create_edit_proposal, validate_edit_proposal, validate_model_plan
 from patchpilot.models import Inspection
 
 
@@ -65,3 +65,25 @@ def test_api_key_is_not_needed_until_live_client_creation(monkeypatch: pytest.Mo
     planner = OpenAIPlanner(client=None)
     with pytest.raises(PlannerError, match="OPENAI_API_KEY"):
         _ = planner.client
+
+
+def test_edit_proposal_rejects_unselected_path() -> None:
+    payload = {"path": "pyproject.toml", "new_content": "x", "explanation": "change", "risks": [], "test_command": "python -m pytest"}
+    with pytest.raises(PlannerError):
+        validate_edit_proposal(payload, inspection(), ("src/app.py",))
+
+
+class FakeProposalCompletions:
+    def create(self, **kwargs: object) -> object:
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"path":"src/app.py","new_content":"print(\\"fixed\\")\\n","explanation":"Fix parser output","risks":[],"test_command":"python -m pytest"}'))],
+            usage=SimpleNamespace(prompt_tokens=200, completion_tokens=60),
+        )
+
+
+def test_edit_proposal_is_validated_without_network() -> None:
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeProposalCompletions()))
+    result = create_edit_proposal(OpenAIPlanner(model="test-model", client=client), "fix parser", inspection(), ("src/app.py",), {"src/app.py": "print('old')\n"})
+    assert result.proposal.path == "src/app.py"
+    assert "fixed" in result.proposal.new_content
+    assert result.usage == {"input_tokens": 200, "output_tokens": 60}

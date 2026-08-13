@@ -7,7 +7,7 @@ from pathlib import Path
 from .editor import EditDenied, apply_edit, preview_edit
 from .inspector import RepositoryInspector
 from .logging import JsonlRunLogger
-from .llm import OpenAIPlanner, PlannerError, plan_to_dict
+from .llm import OpenAIPlanner, PlannerError, create_edit_proposal, plan_to_dict, proposal_to_dict
 from .orchestrator import run_test_loop
 from .planner import make_plan
 from .safety import UnsafeCommand, run_safe
@@ -44,6 +44,11 @@ def _parser() -> argparse.ArgumentParser:
     ai_plan.add_argument("task")
     ai_plan.add_argument("--repo", type=Path, default=Path.cwd())
     ai_plan.add_argument("--model")
+    propose = subparsers.add_parser("propose", help="generate a review-only edit proposal")
+    propose.add_argument("task")
+    propose.add_argument("files", nargs="+", help="explicit repository-relative files to send for review")
+    propose.add_argument("--repo", type=Path, default=Path.cwd())
+    propose.add_argument("--model")
     return parser
 
 
@@ -77,6 +82,26 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(plan_to_dict(result), indent=2, sort_keys=True))
         print("Approval required before any edit or command execution.")
+        return 0
+    if args.command == "propose":
+        logger = JsonlRunLogger.for_repository(args.repo)
+        try:
+            inspection = inspector.inspect(args.repo)
+            selected = tuple(args.files)
+            contents = {path: inspector.read_file(args.repo, path) for path in selected}
+            result = create_edit_proposal(
+                OpenAIPlanner(model=args.model), args.task, inspection, selected, contents,
+            )
+            diff = preview_edit(args.repo, result.proposal.path, result.proposal.new_content)
+            logger.record("edit_proposal_created", model=result.model, path=result.proposal.path, **result.usage)
+        except (PlannerError, ValueError, OSError) as exc:
+            logger.record("edit_proposal_blocked", reason=str(exc))
+            print(f"PROPOSAL BLOCKED: {exc}")
+            return 2
+        print(json.dumps(proposal_to_dict(result), indent=2, sort_keys=True))
+        print("\nPROPOSED DIFF (review only; no files changed):")
+        print(diff or "No changes.")
+        print("Approval is required before applying this proposal.")
         return 0
     logger = JsonlRunLogger.for_repository(args.repo) if args.command in {"edit", "test"} else None
     if args.command == "edit":

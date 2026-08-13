@@ -20,6 +20,7 @@ loop will be added only after the safety boundary is tested.
 - Repository-local JSONL run logs with no source-content capture
 - Test execution with timeout handling and one bounded recovery callback
 - Optional structured LLM planning with OpenAI-compatible output validation
+- Review-only model-generated edit proposals for explicitly selected files
 
 ## Architecture
 
@@ -52,6 +53,7 @@ patchpilot edit src/app.py --content-file /tmp/app.py.new --repo /path/to/reposi
 patchpilot test "python -m pytest" --repo /path/to/repository
 patchpilot logs --repo /path/to/repository
 patchpilot llm-plan "Fix the failing parser tests" --repo /path/to/repository
+patchpilot propose "Fix the parser tests" src/parser.py --repo /path/to/repository
 ```
 
 For a bounded recovery attempt, provide a reviewed replacement file and an
@@ -91,6 +93,11 @@ patchpilot llm-plan "Fix the failing parser tests" --repo /path/to/repository
 
 API-key-free mock tests cover the provider and schema boundary. The key is
 needed only for the `llm-plan` command.
+
+The `propose` command is also review-only: it sends only the explicitly named
+file contents, validates the returned path and test command, prints a unified
+diff, and changes nothing. Applying the diff still requires the existing
+approval-gated editor.
 
 ## Roadmap
 

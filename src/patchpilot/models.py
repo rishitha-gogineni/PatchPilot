@@ -45,6 +45,22 @@ class PlannerResult:
 
 
 @dataclass(frozen=True)
+class EditProposal:
+    path: str
+    new_content: str
+    explanation: str
+    risks: tuple[str, ...]
+    test_command: str | None
+
+
+@dataclass(frozen=True)
+class ProposalResult:
+    proposal: EditProposal
+    model: str
+    usage: dict[str, int]
+
+
+@dataclass(frozen=True)
 class CommandResult:
     command: str
     returncode: int
