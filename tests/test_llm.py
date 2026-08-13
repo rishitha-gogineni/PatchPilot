@@ -73,6 +73,25 @@ def test_edit_proposal_rejects_unselected_path() -> None:
         validate_edit_proposal(payload, inspection(), ("src/app.py",))
 
 
+def test_edit_proposal_accepts_single_risk_string() -> None:
+    payload = {"path": "src/app.py", "new_content": "x", "explanation": "change", "risks": "none", "test_command": "python -m pytest"}
+    proposal = validate_edit_proposal(payload, inspection(), ("src/app.py",))
+    assert proposal.risks == ("none",)
+
+
+def test_edit_proposal_context_rejects_truncated_replacement() -> None:
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeProposalCompletions()))
+    long_source = "x = 1\n" * 200
+    with pytest.raises(PlannerError, match="truncated"):
+        create_edit_proposal(OpenAIPlanner(model="test-model", client=client), "fix parser", inspection(), ("src/app.py",), {"src/app.py": long_source})
+
+
+def test_edit_proposal_rejects_control_characters() -> None:
+    payload = {"path": "src/app.py", "new_content": "ok\x14\n", "explanation": "change", "risks": [], "test_command": "python -m pytest"}
+    with pytest.raises(PlannerError, match="control characters"):
+        validate_edit_proposal(payload, inspection(), ("src/app.py",))
+
+
 class FakeProposalCompletions:
     def create(self, **kwargs: object) -> object:
         return SimpleNamespace(

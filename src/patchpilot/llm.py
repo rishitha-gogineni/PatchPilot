@@ -40,9 +40,11 @@ def _required_string(value: Any, field: str) -> str:
     return value.strip()
 
 
-def _string_list(value: Any, field: str, *, max_items: int = 20) -> tuple[str, ...]:
+def _string_list(value: Any, field: str, *, max_items: int = 20, allow_scalar: bool = False) -> tuple[str, ...]:
+    if allow_scalar and isinstance(value, str):
+        return (value.strip(),) if value.strip() else ()
     if not isinstance(value, list) or len(value) > max_items or any(not isinstance(item, str) or not item.strip() for item in value):
-        raise PlannerError(f"plan field '{field}' must be a list of at most {max_items} non-empty strings")
+        raise PlannerError(f"field '{field}' must be a list of at most {max_items} non-empty strings")
     return tuple(item.strip() for item in value)
 
 
@@ -128,8 +130,10 @@ def validate_edit_proposal(payload: Any, inspection: Inspection, allowed_files: 
     new_content = payload.get("new_content")
     if not isinstance(new_content, str) or len(new_content.encode("utf-8")) > 500_000:
         raise PlannerError("proposal new_content must be text under 500KB")
+    if any(ord(char) < 32 and char not in "\n\r\t" for char in new_content):
+        raise PlannerError("proposal contains disallowed control characters")
     explanation = _required_string(payload.get("explanation"), "explanation")
-    risks = _string_list(payload.get("risks"), "risks")
+    risks = _string_list(payload.get("risks"), "risks", allow_scalar=True)
     test_command = payload.get("test_command")
     if test_command is not None and (not isinstance(test_command, str) or not test_command.strip()):
         raise PlannerError("proposal test_command must be a string or null")
@@ -167,8 +171,10 @@ def create_edit_proposal(planner: OpenAIPlanner, task: str, inspection: Inspecti
     context = build_proposal_context(task, inspection, selected_files, file_contents)
     system = (
         "You are PatchPilot's patch proposal component. Return only JSON with keys "
-        "path, new_content, explanation, risks, test_command. Return one complete-file "
-        "proposal for exactly one selected path. Do not run tools or include markdown."
+        "path, new_content, explanation, risks, test_command. Return the COMPLETE "
+        "replacement contents of exactly one selected file, preserving all existing "
+        "code except the requested change. Never return a fragment, snippet, or diff. "
+        "Do not run tools or include markdown."
     )
     try:
         response = planner.client.chat.completions.create(
@@ -183,4 +189,8 @@ def create_edit_proposal(planner: OpenAIPlanner, task: str, inspection: Inspecti
         raise
     except Exception as exc:
         raise PlannerError(f"model proposal request failed: {type(exc).__name__}") from exc
-    return ProposalResult(validate_edit_proposal(payload, inspection, selected_files), planner.model, _usage(response))
+    proposal = validate_edit_proposal(payload, inspection, selected_files)
+    original = file_contents[proposal.path]
+    if len(original) >= 500 and len(proposal.new_content) < max(200, int(len(original) * 0.5)):
+        raise PlannerError("proposal appears truncated; complete-file content is required")
+    return ProposalResult(proposal, planner.model, _usage(response))
