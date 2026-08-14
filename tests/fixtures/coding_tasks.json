@@ -1,0 +1,87 @@
+[
+  {
+    "task_id": "normalize-name",
+    "description": "Normalize a display name by trimming whitespace and converting it to lowercase.",
+    "test_command": "python -m pytest",
+    "files": {
+      "pyproject.toml": "[project]\nname = 'fixture-normalize-name'\n",
+      "app.py": "def normalize_name(value):\n    raise NotImplementedError\n",
+      "test_app.py": "from app import normalize_name\n\ndef test_normalize_name():\n    assert normalize_name('  Ada Lovelace  ') == 'ada lovelace'\n"
+    },
+    "proposal": {
+      "path": "app.py",
+      "new_content": "def normalize_name(value):\n    return value.strip().lower()\n",
+      "explanation": "Trim surrounding whitespace and normalize case.",
+      "risks": [],
+      "test_command": "python -m pytest"
+    }
+  },
+  {
+    "task_id": "parse-port",
+    "description": "Parse a TCP port string as an integer.",
+    "test_command": "python -m pytest",
+    "files": {
+      "pyproject.toml": "[project]\nname = 'fixture-parse-port'\n",
+      "app.py": "def parse_port(value):\n    raise NotImplementedError\n",
+      "test_app.py": "from app import parse_port\n\ndef test_parse_port():\n    assert parse_port('8080') == 8080\n"
+    },
+    "proposal": {
+      "path": "app.py",
+      "new_content": "def parse_port(value):\n    return int(value)\n",
+      "explanation": "Convert the supplied port text into an integer.",
+      "risks": [],
+      "test_command": "python -m pytest"
+    }
+  },
+  {
+    "task_id": "clamp-score",
+    "description": "Clamp a numeric score to the inclusive range zero through one.",
+    "test_command": "python -m pytest",
+    "files": {
+      "pyproject.toml": "[project]\nname = 'fixture-clamp-score'\n",
+      "app.py": "def clamp_score(value):\n    raise NotImplementedError\n",
+      "test_app.py": "from app import clamp_score\n\ndef test_clamp_score():\n    assert clamp_score(-1) == 0\n    assert clamp_score(0.4) == 0.4\n    assert clamp_score(2) == 1\n"
+    },
+    "proposal": {
+      "path": "app.py",
+      "new_content": "def clamp_score(value):\n    return max(0, min(1, value))\n",
+      "explanation": "Use min and max to enforce the inclusive score range.",
+      "risks": [],
+      "test_command": "python -m pytest"
+    }
+  },
+  {
+    "task_id": "even-number",
+    "description": "Return whether an integer is even.",
+    "test_command": "python -m pytest",
+    "files": {
+      "pyproject.toml": "[project]\nname = 'fixture-even-number'\n",
+      "app.py": "def is_even(value):\n    raise NotImplementedError\n",
+      "test_app.py": "from app import is_even\n\ndef test_is_even():\n    assert is_even(4) is True\n    assert is_even(5) is False\n"
+    },
+    "proposal": {
+      "path": "app.py",
+      "new_content": "def is_even(value):\n    return value % 2 == 0\n",
+      "explanation": "Use the remainder after division by two.",
+      "risks": [],
+      "test_command": "python -m pytest"
+    }
+  },
+  {
+    "task_id": "safe-divide",
+    "description": "Return zero when the denominator is zero; otherwise divide the values.",
+    "test_command": "python -m pytest",
+    "files": {
+      "pyproject.toml": "[project]\nname = 'fixture-safe-divide'\n",
+      "app.py": "def safe_divide(left, right):\n    raise NotImplementedError\n",
+      "test_app.py": "from app import safe_divide\n\ndef test_safe_divide():\n    assert safe_divide(8, 2) == 4\n    assert safe_divide(8, 0) == 0\n"
+    },
+    "proposal": {
+      "path": "app.py",
+      "new_content": "def safe_divide(left, right):\n    return 0 if right == 0 else left / right\n",
+      "explanation": "Handle the zero denominator before dividing.",
+      "risks": [],
+      "test_command": "python -m pytest"
+    }
+  }
+]

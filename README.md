@@ -21,6 +21,7 @@ loop will be added only after the safety boundary is tested.
 - Test execution with timeout handling and one bounded recovery callback
 - Optional structured LLM planning with OpenAI-compatible output validation
 - Review-only model-generated edit proposals for explicitly selected files
+- Five-task deterministic coding benchmark with validity and test-pass metrics
 
 ## Architecture
 
@@ -54,6 +55,7 @@ patchpilot test "python -m pytest" --repo /path/to/repository
 patchpilot logs --repo /path/to/repository
 patchpilot llm-plan "Fix the failing parser tests" --repo /path/to/repository
 patchpilot propose "Fix the parser tests" src/parser.py --repo /path/to/repository
+patchpilot evaluate tests/fixtures/coding_tasks.json
 ```
 
 For a bounded recovery attempt, provide a reviewed replacement file and an
@@ -98,6 +100,11 @@ The `propose` command is also review-only: it sends only the explicitly named
 file contents, validates the returned path and test command, prints a unified
 diff, and changes nothing. Applying the diff still requires the existing
 approval-gated editor.
+
+The deterministic benchmark uses five small fixture repositories and does not
+call a model. It measures proposal validity, test-pass rate, task success, and
+latency. A future live mode will use the same fixtures with the configured
+model and record token usage separately.
 
 ## Roadmap
 

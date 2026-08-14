@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from .editor import EditDenied, apply_edit, preview_edit
+from .evaluation import evaluate_tasks
 from .inspector import RepositoryInspector
 from .logging import JsonlRunLogger
 from .llm import OpenAIPlanner, PlannerError, create_edit_proposal, plan_to_dict, proposal_to_dict
@@ -49,6 +50,9 @@ def _parser() -> argparse.ArgumentParser:
     propose.add_argument("files", nargs="+", help="explicit repository-relative files to send for review")
     propose.add_argument("--repo", type=Path, default=Path.cwd())
     propose.add_argument("--model")
+    evaluate = subparsers.add_parser("evaluate", help="run the deterministic coding-task benchmark")
+    evaluate.add_argument("fixture", type=Path)
+    evaluate.add_argument("--json", action="store_true")
     return parser
 
 
@@ -102,6 +106,23 @@ def main(argv: list[str] | None = None) -> int:
         print("\nPROPOSED DIFF (review only; no files changed):")
         print(diff or "No changes.")
         print("Approval is required before applying this proposal.")
+        return 0
+    if args.command == "evaluate":
+        try:
+            report = evaluate_tasks(args.fixture)
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            print(f"EVALUATION BLOCKED: {exc}")
+            return 2
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(f"Fixture: {report['fixture']}")
+            print(f"Tasks: {report['tasks']}")
+            print(f"Proposal validity: {report['proposal_validity_rate']:.2%}")
+            print(f"Test pass rate: {report['test_pass_rate']:.2%}")
+            print(f"Task success rate: {report['task_success_rate']:.2%}")
+            print(f"Average latency: {report['total_latency_ms'] / report['tasks']:.2f} ms")
+            print("Model calls: 0 (deterministic fixture proposals)")
         return 0
     logger = JsonlRunLogger.for_repository(args.repo) if args.command in {"edit", "test"} else None
     if args.command == "edit":
