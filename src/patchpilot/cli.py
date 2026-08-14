@@ -12,6 +12,7 @@ from .llm import OpenAIPlanner, PlannerError, create_edit_proposal, plan_to_dict
 from .orchestrator import run_test_loop
 from .planner import make_plan
 from .safety import UnsafeCommand, run_safe
+from .workflow import apply_proposal
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -50,6 +51,15 @@ def _parser() -> argparse.ArgumentParser:
     propose.add_argument("files", nargs="+", help="explicit repository-relative files to send for review")
     propose.add_argument("--repo", type=Path, default=Path.cwd())
     propose.add_argument("--model")
+    propose.add_argument("--json", action="store_true", help="print only the machine-readable proposal JSON")
+    apply = subparsers.add_parser("apply-proposal", help="apply a reviewed proposal after explicit approval")
+    apply.add_argument("proposal_file", type=Path)
+    apply.add_argument("--repo", type=Path, default=Path.cwd())
+    apply.add_argument("--approve", action="store_true")
+    apply.add_argument("--test-command")
+    apply.add_argument("--timeout", type=float, default=60.0)
+    apply.add_argument("--recovery-proposal-file", type=Path)
+    apply.add_argument("--approve-recovery", action="store_true")
     evaluate = subparsers.add_parser("evaluate", help="run the deterministic coding-task benchmark")
     evaluate.add_argument("fixture", type=Path)
     evaluate.add_argument("--json", action="store_true")
@@ -102,11 +112,48 @@ def main(argv: list[str] | None = None) -> int:
             logger.record("edit_proposal_blocked", reason=str(exc))
             print(f"PROPOSAL BLOCKED: {exc}")
             return 2
-        print(json.dumps(proposal_to_dict(result), indent=2, sort_keys=True))
+        proposal_json = proposal_to_dict(result)
+        if args.json:
+            print(json.dumps(proposal_json, indent=2, sort_keys=True))
+            return 0
+        print(json.dumps(proposal_json, indent=2, sort_keys=True))
         print("\nPROPOSED DIFF (review only; no files changed):")
         print(diff or "No changes.")
         print("Approval is required before applying this proposal.")
         return 0
+    if args.command == "apply-proposal":
+        logger = JsonlRunLogger.for_repository(args.repo)
+        try:
+            result = apply_proposal(
+                args.repo,
+                args.proposal_file,
+                approved=args.approve,
+                test_command=args.test_command,
+                timeout=args.timeout,
+                recovery_proposal_file=args.recovery_proposal_file,
+                recovery_approved=args.approve_recovery,
+                logger=logger.record,
+            )
+        except (EditDenied, PlannerError, UnsafeCommand, ValueError, OSError) as exc:
+            logger.record("proposal_workflow_blocked", reason=str(exc))
+            print(f"APPLY BLOCKED: {exc}")
+            return 2
+        print(result.diff or "No changes.")
+        if not result.approved:
+            print("Approval required; no files changed.")
+            return 3
+        print(f"Proposal applied: {result.proposal.path}")
+        if result.test_summary is None:
+            print("Tests: skipped (no test command provided)")
+            return 0
+        final = result.test_summary.recovery if result.test_summary.recovery_attempted else result.test_summary.initial
+        if final.stdout:
+            print(final.stdout, end="")
+        if final.stderr:
+            print(final.stderr, end="")
+        print(f"Test success: {'yes' if result.test_summary.success else 'no'}")
+        print(f"Recovery attempted: {'yes' if result.test_summary.recovery_attempted else 'no'}")
+        return 0 if result.test_summary.success else final.returncode
     if args.command == "evaluate":
         try:
             report = evaluate_tasks(args.fixture)
