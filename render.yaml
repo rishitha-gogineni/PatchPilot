@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: patchpilot-api
+    runtime: python
+    plan: free
+    buildCommand: python -m pip install -e ".[graph,persistence,api]"
+    startCommand: uvicorn patchpilot.api:app_factory --factory --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: PATCHPILOT_API_KEY
+        sync: false

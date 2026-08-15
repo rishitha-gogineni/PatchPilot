@@ -77,3 +77,24 @@ def test_api_rejects_invalid_thread_id(tmp_path: Path) -> None:
             },
         )
     assert response.status_code == 422
+
+
+def test_api_key_auth_protects_workflows_but_allows_health(tmp_path: Path) -> None:
+    proposal = make_repository(tmp_path)
+    database = tmp_path / "auth-checkpoints.sqlite"
+    key = "test-api-key-123456"
+    payload = {
+        "thread_id": "auth-test",
+        "repository": str(tmp_path),
+        "proposal_file": str(proposal),
+    }
+    with TestClient(create_app(database, api_key=key)) as client:
+        assert client.get("/healthz").status_code == 200
+        assert client.post("/v1/workflows", json=payload).status_code == 401
+        assert client.post("/v1/workflows", json=payload, headers={"X-API-Key": "wrong-key"}).status_code == 401
+        authorized = client.post(
+            "/v1/workflows",
+            json=payload,
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        assert authorized.status_code == 200

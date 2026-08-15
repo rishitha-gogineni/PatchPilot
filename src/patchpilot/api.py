@@ -1,5 +1,7 @@
 import re
 import time
+import hmac
+import os
 from pathlib import Path
 from typing import Any, Optional, Union
 from uuid import uuid4
@@ -33,10 +35,18 @@ def _validate_thread_id(thread_id: str) -> str:
     return thread_id
 
 
-def create_app(checkpoint_db: Union[Path, str] = ".patchpilot/checkpoints.sqlite") -> Any:
-    """Create the optional FastAPI service backed by SQLite checkpoints."""
+def create_app(
+    checkpoint_db: Union[Path, str] = ".patchpilot/checkpoints.sqlite",
+    api_key: Optional[str] = None,
+) -> Any:
+    """Create the optional FastAPI service backed by SQLite checkpoints.
+
+    Authentication is enabled when ``api_key`` or ``PATCHPILOT_API_KEY`` is
+    configured. The health endpoint remains public for deployment probes.
+    """
     try:
         from fastapi import FastAPI, HTTPException, Request
+        from fastapi.responses import JSONResponse
         from pydantic import BaseModel, Field
     except ImportError as exc:  # pragma: no cover - exercised when optional extra is absent
         raise RuntimeError("FastAPI is not installed; use pip install -e '.[api]'") from exc
@@ -61,6 +71,10 @@ def create_app(checkpoint_db: Union[Path, str] = ".patchpilot/checkpoints.sqlite
         Path(checkpoint_db).expanduser().resolve().parent / "api-runs.jsonl",
         trace_id="api",
     )
+    configured_api_key = api_key if api_key is not None else os.getenv("PATCHPILOT_API_KEY")
+    configured_api_key = configured_api_key.strip() if configured_api_key else None
+    if configured_api_key and len(configured_api_key) < 16:
+        raise ValueError("PATCHPILOT_API_KEY must be at least 16 characters")
 
     @app.middleware("http")
     async def request_trace(request: Request, call_next: Any) -> Any:
@@ -69,7 +83,21 @@ def create_app(checkpoint_db: Union[Path, str] = ".patchpilot/checkpoints.sqlite
         request.state.request_id = request_id
         started = time.perf_counter()
         try:
-            response = await call_next(request)
+            if configured_api_key and request.url.path.startswith("/v1/"):
+                authorization = request.headers.get("Authorization", "")
+                presented = request.headers.get("X-API-Key", "")
+                if authorization.startswith("Bearer "):
+                    presented = authorization[7:].strip()
+                if not presented or not hmac.compare_digest(presented, configured_api_key):
+                    response = JSONResponse(
+                        status_code=401,
+                        content={"detail": "authentication required"},
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+                else:
+                    response = await call_next(request)
+            else:
+                response = await call_next(request)
         except Exception:
             api_logger.record(
                 "api_request",
@@ -91,6 +119,10 @@ def create_app(checkpoint_db: Union[Path, str] = ".patchpilot/checkpoints.sqlite
             duration_ms=round((time.perf_counter() - started) * 1000, 2),
         )
         return response
+
+    @app.get("/healthz")
+    def healthz() -> dict[str, str]:
+        return {"status": "ok"}
 
     def config_for(thread_id: str) -> dict[str, Any]:
         try:

@@ -156,6 +156,15 @@ uvicorn patchpilot.api:app_factory --factory --host 127.0.0.1 --port 8000
 `{ "approved": false }`. SQLite is intended for local or single-process use;
 use a server-backed checkpointer before running multiple API workers.
 
+### API authentication and deployment
+
+For a public deployment, configure a high-entropy `PATCHPILOT_API_KEY`. The
+workflow endpoints then require either `Authorization: Bearer <key>` or an
+`X-API-Key` header; `/healthz` remains unauthenticated for health probes. The
+included `render.yaml` binds Uvicorn to Render's port and declares the API key
+as a dashboard-managed secret. Keep the service single-process until the
+checkpoint store is moved from local SQLite to a server-backed checkpointer.
+
 The deterministic benchmark uses five small fixture repositories and does not
 call a model. It measures proposal validity, test-pass rate, task success, and
 latency. An opt-in live mode uses the same isolated fixtures with the configured
@@ -182,6 +191,6 @@ database, so a request can be correlated with its workflow trace.
 
 ## Roadmap
 
-1. Add repository-aware retrieval for planner context.
-2. Add authentication and deployment hardening for public API hosting.
+1. Add a server-backed checkpointer for multi-worker deployments.
+2. Add rate limiting and centralized secret management for hosted use.
 3. Add a lightweight interactive UI after the CLI workflow is stable.
