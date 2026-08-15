@@ -145,11 +145,30 @@ use a server-backed checkpointer before running multiple API workers.
 
 The deterministic benchmark uses five small fixture repositories and does not
 call a model. It measures proposal validity, test-pass rate, task success, and
-latency. A future live mode will use the same fixtures with the configured
-model and record token usage separately.
+latency. An opt-in live mode uses the same isolated fixtures with the configured
+model and records token usage and estimated cost:
+
+```bash
+set -a; source .env; set +a
+patchpilot evaluate-live tests/fixtures/coding_tasks.json \
+  --model gpt-4o-mini --json
+```
+
+Live evaluation sends only the selected fixture file to the model and can incur
+provider charges. Set `--input-cost-per-million` and
+`--output-cost-per-million` to the current provider rates before comparing cost
+reports.
+
+### Observability
+
+CLI and graph runs append structured JSONL events to
+`.patchpilot/runs.jsonl`. Events include a `run_id` and `trace_id`, but never
+capture source-file contents. The local API returns an `X-Request-ID` header and
+writes request timing/status events to `api-runs.jsonl` beside its checkpoint
+database, so a request can be correlated with its workflow trace.
 
 ## Roadmap
 
-1. Add an optional live-model benchmark with token and cost reporting.
-2. Add a server-backed checkpointer for multi-worker deployments.
-3. Add a lightweight interactive UI after the CLI workflow is stable.
+1. Add repository-aware retrieval for planner context.
+2. Add retry, timeout, and model-fallback policies for live API failures.
+3. Add authentication and deployment hardening for public API hosting.

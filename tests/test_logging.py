@@ -11,4 +11,6 @@ def test_logger_writes_structured_events_without_content(tmp_path: Path) -> None
     assert event["event"] == "edit_applied"
     assert event["path"] == "src/app.py"
     assert "timestamp" in event
+    assert event["run_id"]
+    assert event["trace_id"]
     assert json.loads((tmp_path / ".patchpilot" / "runs.jsonl").read_text()) == event

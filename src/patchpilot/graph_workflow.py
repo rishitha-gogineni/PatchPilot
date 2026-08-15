@@ -4,6 +4,7 @@ import sqlite3
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional, TypedDict
+from uuid import uuid4
 
 from .logging import JsonlRunLogger
 from .workflow import _load_validated_proposal, apply_proposal
@@ -24,6 +25,7 @@ class CodingWorkflowState(TypedDict, total=False):
     recovery_attempted: bool
     status: str
     error: Optional[str]
+    trace_id: str
 
 
 def _langgraph_api() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
@@ -36,21 +38,33 @@ def _langgraph_api() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
     return StateGraph, START, END, MemorySaver, Command, interrupt, None
 
 
+def _trace_logger(state: CodingWorkflowState, repository: Path) -> JsonlRunLogger:
+    trace_id = state.get("trace_id")
+    return JsonlRunLogger.for_repository(repository, run_id=trace_id, trace_id=trace_id)
+
+
 def _prepare_node(state: CodingWorkflowState) -> CodingWorkflowState:
     repository = Path(state["repository"]).expanduser().resolve()
+    logger = _trace_logger(state, repository)
+    logger.record("workflow_prepare_started")
     proposal = _load_validated_proposal(repository, Path(state["proposal_file"]))
     from .editor import preview_edit
 
-    return {
+    prepared = {
         "proposal": asdict(proposal),
         "diff": preview_edit(repository, proposal.path, proposal.new_content),
         "status": "awaiting_approval",
     }
+    logger.record("workflow_approval_requested", path=proposal.path, changed=bool(prepared["diff"]))
+    return prepared
 
 
 def _approval_node(state: CodingWorkflowState) -> CodingWorkflowState:
     if state.get("approved") is True:
         return {"status": "approved"}
+    repository = Path(state["repository"]).expanduser().resolve()
+    logger = _trace_logger(state, repository)
+    logger.record("workflow_approval_waiting", path=state["proposal"]["path"])
     _, _, _, _, _, interrupt, _ = _langgraph_api()
     decision = interrupt({
         "type": "edit_approval",
@@ -59,6 +73,7 @@ def _approval_node(state: CodingWorkflowState) -> CodingWorkflowState:
         "message": "Approve this complete-file proposal before applying it?",
     })
     approved = decision is True or (isinstance(decision, dict) and decision.get("approved") is True)
+    logger.record("workflow_approval_received", approved=approved)
     return {"approved": approved, "status": "approved" if approved else "rejected"}
 
 
@@ -68,7 +83,8 @@ def _route_after_approval(state: CodingWorkflowState) -> str:
 
 def _apply_node(state: CodingWorkflowState) -> CodingWorkflowState:
     repository = Path(state["repository"]).expanduser().resolve()
-    logger = JsonlRunLogger.for_repository(repository)
+    logger = _trace_logger(state, repository)
+    logger.record("workflow_apply_started", path=state["proposal"]["path"])
     result = apply_proposal(
         repository,
         Path(state["proposal_file"]),
@@ -80,15 +96,19 @@ def _apply_node(state: CodingWorkflowState) -> CodingWorkflowState:
         logger=logger.record,
     )
     summary = result.test_summary
-    return {
+    applied = {
         "applied": result.applied,
         "test_success": summary.success if summary else None,
         "recovery_attempted": summary.recovery_attempted if summary else False,
         "status": "completed" if summary is None or summary.success else "tests_failed",
     }
+    logger.record("workflow_apply_completed", status=applied["status"], success=bool(summary is None or summary.success))
+    return applied
 
 
 def _reject_node(state: CodingWorkflowState) -> CodingWorkflowState:
+    repository = Path(state["repository"]).expanduser().resolve()
+    _trace_logger(state, repository).record("workflow_rejected", path=state["proposal"]["path"])
     return {"status": "rejected", "applied": False}
 
 
@@ -147,6 +167,7 @@ def initial_state(
     timeout: float = 60.0,
     recovery_proposal_file: Path | None = None,
     approve_recovery: bool = False,
+    trace_id: str | None = None,
 ) -> CodingWorkflowState:
     return {
         "repository": str(repository.expanduser().resolve()),
@@ -155,6 +176,7 @@ def initial_state(
         "timeout": timeout,
         "recovery_proposal_file": str(recovery_proposal_file.expanduser().resolve()) if recovery_proposal_file else None,
         "approve_recovery": approve_recovery,
+        "trace_id": trace_id or uuid4().hex,
     }
 
 

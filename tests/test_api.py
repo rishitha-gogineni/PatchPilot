@@ -47,6 +47,8 @@ def test_api_resumes_thread_after_app_recreation(tmp_path: Path) -> None:
     with TestClient(create_app(database)) as client:
         started = client.post("/v1/workflows", json=payload)
         assert started.status_code == 200
+        assert started.headers["X-Request-ID"] == started.json()["request_id"]
+        assert started.json()["request_id"]
         assert started.json()["pending_approval"] is True
         assert started.json()["status"] == "awaiting_approval"
 
@@ -57,6 +59,9 @@ def test_api_resumes_thread_after_app_recreation(tmp_path: Path) -> None:
         assert resumed.json()["state"]["test_success"] is True
 
     assert (tmp_path / "target.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+    api_events = (tmp_path / "api-runs.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(api_events) >= 2
+    assert all('"event": "api_request"' in line for line in api_events)
 
 
 def test_api_rejects_invalid_thread_id(tmp_path: Path) -> None:

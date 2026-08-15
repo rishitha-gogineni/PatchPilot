@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from .editor import EditDenied, apply_edit, preview_edit
-from .evaluation import evaluate_tasks
+from .evaluation import evaluate_live_tasks, evaluate_tasks
 from .inspector import RepositoryInspector
 from .logging import JsonlRunLogger
 from .llm import OpenAIPlanner, PlannerError, create_edit_proposal, plan_to_dict, proposal_to_dict
@@ -76,6 +76,13 @@ def _parser() -> argparse.ArgumentParser:
     evaluate = subparsers.add_parser("evaluate", help="run the deterministic coding-task benchmark")
     evaluate.add_argument("fixture", type=Path)
     evaluate.add_argument("--json", action="store_true")
+    live_evaluate = subparsers.add_parser("evaluate-live", help="run the opt-in live-model benchmark")
+    live_evaluate.add_argument("fixture", type=Path)
+    live_evaluate.add_argument("--model")
+    live_evaluate.add_argument("--input-cost-per-million", type=float, default=0.15)
+    live_evaluate.add_argument("--output-cost-per-million", type=float, default=0.60)
+    live_evaluate.add_argument("--test-timeout", type=float, default=30.0)
+    live_evaluate.add_argument("--json", action="store_true")
     return parser
 
 
@@ -227,6 +234,32 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Task success rate: {report['task_success_rate']:.2%}")
             print(f"Average latency: {report['total_latency_ms'] / report['tasks']:.2f} ms")
             print("Model calls: 0 (deterministic fixture proposals)")
+        return 0
+    if args.command == "evaluate-live":
+        try:
+            report = evaluate_live_tasks(
+                args.fixture,
+                OpenAIPlanner(model=args.model),
+                input_cost_per_million=args.input_cost_per_million,
+                output_cost_per_million=args.output_cost_per_million,
+                test_timeout=args.test_timeout,
+            )
+        except (PlannerError, ValueError, OSError, json.JSONDecodeError) as exc:
+            print(f"LIVE EVALUATION BLOCKED: {exc}")
+            return 2
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(f"Fixture: {report['fixture']}")
+            print(f"Model: {report['model']}")
+            print(f"Tasks: {report['tasks']}")
+            print(f"Proposal validity: {report['proposal_validity_rate']:.2%}")
+            print(f"Test pass rate: {report['test_pass_rate']:.2%}")
+            print(f"Task success rate: {report['task_success_rate']:.2%}")
+            print(f"Average latency: {report['total_latency_ms'] / report['tasks']:.2f} ms")
+            print(f"Model calls: {report['model_calls']}")
+            print(f"Tokens: {report['input_tokens']} input / {report['output_tokens']} output")
+            print(f"Estimated cost: ${report['estimated_cost']:.6f}")
         return 0
     logger = JsonlRunLogger.for_repository(args.repo) if args.command in {"edit", "test"} else None
     if args.command == "edit":

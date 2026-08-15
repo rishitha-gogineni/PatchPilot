@@ -1,8 +1,11 @@
 import re
+import time
 from pathlib import Path
 from typing import Any, Optional, Union
+from uuid import uuid4
 
 from .graph_workflow import build_sqlite_graph, initial_state, pending_interrupts, resume_approval
+from .logging import JsonlRunLogger
 from .llm import PlannerError
 from .safety import UnsafeCommand
 
@@ -33,7 +36,7 @@ def _validate_thread_id(thread_id: str) -> str:
 def create_app(checkpoint_db: Union[Path, str] = ".patchpilot/checkpoints.sqlite") -> Any:
     """Create the optional FastAPI service backed by SQLite checkpoints."""
     try:
-        from fastapi import FastAPI, HTTPException
+        from fastapi import FastAPI, HTTPException, Request
         from pydantic import BaseModel, Field
     except ImportError as exc:  # pragma: no cover - exercised when optional extra is absent
         raise RuntimeError("FastAPI is not installed; use pip install -e '.[api]'") from exc
@@ -54,6 +57,40 @@ def create_app(checkpoint_db: Union[Path, str] = ".patchpilot/checkpoints.sqlite
     app = FastAPI(title="PatchPilot Workflow API", version="0.1.0")
     app.state.graph = graph
     app.state.checkpoint_connection = connection
+    api_logger = JsonlRunLogger(
+        Path(checkpoint_db).expanduser().resolve().parent / "api-runs.jsonl",
+        trace_id="api",
+    )
+
+    @app.middleware("http")
+    async def request_trace(request: Request, call_next: Any) -> Any:
+        candidate = request.headers.get("X-Request-ID", "").strip()
+        request_id = candidate if 0 < len(candidate) <= 128 and _THREAD_ID.fullmatch(candidate) else uuid4().hex
+        request.state.request_id = request_id
+        started = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            api_logger.record(
+                "api_request",
+                request_id=request_id,
+                method=request.method,
+                path=request.url.path,
+                status_code=500,
+                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                error="unhandled_exception",
+            )
+            raise
+        response.headers["X-Request-ID"] = request_id
+        api_logger.record(
+            "api_request",
+            request_id=request_id,
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            duration_ms=round((time.perf_counter() - started) * 1000, 2),
+        )
+        return response
 
     def config_for(thread_id: str) -> dict[str, Any]:
         try:
@@ -61,10 +98,16 @@ def create_app(checkpoint_db: Union[Path, str] = ".patchpilot/checkpoints.sqlite
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    def result_payload(thread_id: str, result: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    def result_payload(
+        thread_id: str,
+        result: dict[str, Any],
+        config: dict[str, Any],
+        request_id: str,
+    ) -> dict[str, Any]:
         interrupts = pending_interrupts(graph, config)
         return {
             "thread_id": thread_id,
+            "request_id": request_id,
             "status": result.get("status"),
             "pending_approval": bool(interrupts),
             "interrupts": _jsonable(interrupts),
@@ -75,26 +118,28 @@ def create_app(checkpoint_db: Union[Path, str] = ".patchpilot/checkpoints.sqlite
         return HTTPException(status_code=400, detail=str(exc))
 
     @app.post("/v1/workflows")
-    def start_workflow(request: StartRequest) -> dict[str, Any]:
-        config = config_for(request.thread_id)
+    def start_workflow(payload: StartRequest, http_request: Request) -> dict[str, Any]:
+        request_id = http_request.state.request_id
+        config = config_for(payload.thread_id)
         try:
             result = graph.invoke(
                 initial_state(
-                    Path(request.repository),
-                    Path(request.proposal_file),
-                    test_command=request.test_command,
-                    timeout=request.timeout,
-                    recovery_proposal_file=(Path(request.recovery_proposal_file) if request.recovery_proposal_file else None),
-                    approve_recovery=request.approve_recovery,
+                    Path(payload.repository),
+                    Path(payload.proposal_file),
+                    test_command=payload.test_command,
+                    timeout=payload.timeout,
+                    recovery_proposal_file=(Path(payload.recovery_proposal_file) if payload.recovery_proposal_file else None),
+                    approve_recovery=payload.approve_recovery,
+                    trace_id=request_id,
                 ),
                 config=config,
             )
         except (PlannerError, UnsafeCommand, ValueError, OSError) as exc:
             raise workflow_error(exc) from exc
-        return result_payload(request.thread_id, result, config)
+        return result_payload(payload.thread_id, result, config, request_id)
 
     @app.get("/v1/workflows/{thread_id}")
-    def workflow_status(thread_id: str) -> dict[str, Any]:
+    def workflow_status(thread_id: str, http_request: Request) -> dict[str, Any]:
         config = config_for(thread_id)
         try:
             snapshot = graph.get_state(config)
@@ -102,18 +147,18 @@ def create_app(checkpoint_db: Union[Path, str] = ".patchpilot/checkpoints.sqlite
             raise workflow_error(exc) from exc
         if not snapshot.values and not snapshot.next:
             raise HTTPException(status_code=404, detail="workflow thread not found")
-        return result_payload(thread_id, dict(snapshot.values), config)
+        return result_payload(thread_id, dict(snapshot.values), config, http_request.state.request_id)
 
     @app.post("/v1/workflows/{thread_id}/resume")
-    def resume_workflow(thread_id: str, request: ResumeRequest) -> dict[str, Any]:
+    def resume_workflow(thread_id: str, payload: ResumeRequest, http_request: Request) -> dict[str, Any]:
         config = config_for(thread_id)
         if not pending_interrupts(graph, config):
             raise HTTPException(status_code=409, detail="workflow is not waiting for approval")
         try:
-            result = resume_approval(graph, config, approved=request.approved)
+            result = resume_approval(graph, config, approved=payload.approved)
         except (PlannerError, UnsafeCommand, ValueError, OSError) as exc:
             raise workflow_error(exc) from exc
-        return result_payload(thread_id, result, config)
+        return result_payload(thread_id, result, config, http_request.state.request_id)
 
     @app.on_event("shutdown")
     def close_checkpoint_connection() -> None:
