@@ -60,6 +60,17 @@ def _parser() -> argparse.ArgumentParser:
     apply.add_argument("--timeout", type=float, default=60.0)
     apply.add_argument("--recovery-proposal-file", type=Path)
     apply.add_argument("--approve-recovery", action="store_true")
+    graph = subparsers.add_parser("graph", help="run the LangGraph approval workflow")
+    graph.add_argument("proposal_file", type=Path)
+    graph.add_argument("--repo", type=Path, default=Path.cwd())
+    graph.add_argument("--test-command")
+    graph.add_argument("--timeout", type=float, default=60.0)
+    graph.add_argument("--recovery-proposal-file", type=Path)
+    graph.add_argument("--approve-recovery", action="store_true")
+    graph.add_argument("--thread-id", default="patchpilot-local")
+    decision = graph.add_mutually_exclusive_group()
+    decision.add_argument("--approve", action="store_true")
+    decision.add_argument("--reject", action="store_true")
     evaluate = subparsers.add_parser("evaluate", help="run the deterministic coding-task benchmark")
     evaluate.add_argument("fixture", type=Path)
     evaluate.add_argument("--json", action="store_true")
@@ -121,6 +132,43 @@ def main(argv: list[str] | None = None) -> int:
         print(diff or "No changes.")
         print("Approval is required before applying this proposal.")
         return 0
+    if args.command == "graph":
+        try:
+            from .graph_workflow import build_apply_graph, initial_state, resume_approval
+
+            graph_app = build_apply_graph()
+            config = {"configurable": {"thread_id": args.thread_id}}
+            first = graph_app.invoke(
+                initial_state(
+                    args.repo,
+                    args.proposal_file,
+                    test_command=args.test_command,
+                    timeout=args.timeout,
+                    recovery_proposal_file=args.recovery_proposal_file,
+                    approve_recovery=args.approve_recovery,
+                ),
+                config=config,
+            )
+            snapshot = graph_app.get_state(config)
+            pending_interrupts = [
+                interrupt
+                for task in snapshot.tasks
+                for interrupt in (getattr(task, "interrupts", ()) or ())
+            ]
+            if pending_interrupts:
+                if args.approve or args.reject:
+                    result = resume_approval(graph_app, config, approved=args.approve)
+                else:
+                    print(json.dumps({"state": first, "interrupts": pending_interrupts}, indent=2, sort_keys=True, default=str))
+                    print("Approval required; graph paused without applying files.")
+                    return 3
+            else:
+                result = first
+        except (EditDenied, PlannerError, UnsafeCommand, RuntimeError, ValueError, OSError) as exc:
+            print(f"GRAPH BLOCKED: {exc}")
+            return 2
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+        return 0 if result.get("status") in {"completed", "rejected"} else 1
     if args.command == "apply-proposal":
         logger = JsonlRunLogger.for_repository(args.repo)
         try:

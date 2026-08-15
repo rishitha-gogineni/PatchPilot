@@ -4,10 +4,10 @@ PatchPilot is a safety-first coding assistant that turns a software task into
 a reviewable plan, inspects a local repository, runs only approved commands,
 and leaves the final change under human control.
 
-The first milestone is deterministic; an LLM planner and bounded edit/recovery
-loop will be added only after the safety boundary is tested.
+The core workflow is deterministic and safety-first; optional model proposals
+and a LangGraph approval workflow build on the same tested execution boundary.
 
-## Current scope (Days 1–3)
+## Current scope
 
 - Python CLI for repository inspection and task planning
 - Repository-root path containment checks
@@ -21,6 +21,8 @@ loop will be added only after the safety boundary is tested.
 - Test execution with timeout handling and one bounded recovery callback
 - Optional structured LLM planning with OpenAI-compatible output validation
 - Review-only model-generated edit proposals for explicitly selected files
+- Explicit `apply-proposal` command with separate recovery approval
+- LangGraph inspect → propose → approve → apply → test workflow with checkpointed pause/resume
 - Five-task deterministic coding benchmark with validity and test-pass metrics
 
 ## Architecture
@@ -28,7 +30,7 @@ loop will be added only after the safety boundary is tested.
 See [docs/architecture.md](docs/architecture.md). The intended workflow is:
 
 ```text
-task → inspect → propose plan → approve → edit → test → bounded recovery → review diff
+task → inspect → propose → approve → apply → test → bounded recovery → review result
 ```
 
 PatchPilot never commits, pushes, resets, cleans, or deletes files
@@ -55,6 +57,9 @@ patchpilot test "python -m pytest" --repo /path/to/repository
 patchpilot logs --repo /path/to/repository
 patchpilot llm-plan "Fix the failing parser tests" --repo /path/to/repository
 patchpilot propose "Fix the parser tests" src/parser.py --repo /path/to/repository
+patchpilot propose "Fix the parser tests" src/parser.py --repo /path/to/repository --json > /tmp/proposal.json
+patchpilot apply-proposal /tmp/proposal.json --repo /path/to/repository
+patchpilot apply-proposal /tmp/proposal.json --repo /path/to/repository --approve
 patchpilot evaluate tests/fixtures/coding_tasks.json
 ```
 
@@ -96,10 +101,26 @@ patchpilot llm-plan "Fix the failing parser tests" --repo /path/to/repository
 API-key-free mock tests cover the provider and schema boundary. The key is
 needed only for the `llm-plan` command.
 
-The `propose` command is also review-only: it sends only the explicitly named
-file contents, validates the returned path and test command, prints a unified
-diff, and changes nothing. Applying the diff still requires the existing
-approval-gated editor.
+The `propose` command is review-only: it sends only the explicitly named file
+contents, validates the returned path and test command, and prints a unified
+diff. Use `--json` to save a proposal for `apply-proposal`; applying it still
+requires an explicit approval flag.
+
+### Optional LangGraph workflow
+
+Install the Python 3.9-compatible graph extra when you want the stateful
+approval workflow:
+
+```bash
+python -m pip install -e ".[graph]"
+patchpilot graph /tmp/proposal.json --repo /path/to/repository
+patchpilot graph /tmp/proposal.json --repo /path/to/repository --approve
+```
+
+The graph pauses before any write and can resume with an approval or rejection
+using a thread ID. Local CLI runs use an in-memory checkpointer; a durable
+checkpointer can be injected when the workflow is hosted in a long-running API
+or worker process.
 
 The deterministic benchmark uses five small fixture repositories and does not
 call a model. It measures proposal validity, test-pass rate, task success, and
@@ -108,6 +129,6 @@ model and record token usage separately.
 
 ## Roadmap
 
-1. Add issue input and a small coding-task evaluation set.
-2. Connect approved model plans to a bounded edit proposal workflow.
+1. Add a durable checkpointer and API endpoint for cross-process resume.
+2. Add an optional live-model benchmark with token and cost reporting.
 3. Add a lightweight interactive UI after the CLI workflow is stable.

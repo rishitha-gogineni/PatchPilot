@@ -14,6 +14,8 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 llm = ["openai>=1.0"]
+# LangGraph 0.2 is the last compatible line for the project's Python 3.9 runtime.
+graph = ["langgraph>=0.2.74,<0.3"]
 
 [project.scripts]
 patchpilot = "patchpilot.cli:main"
