@@ -68,6 +68,8 @@ def _parser() -> argparse.ArgumentParser:
     graph.add_argument("--recovery-proposal-file", type=Path)
     graph.add_argument("--approve-recovery", action="store_true")
     graph.add_argument("--thread-id", default="patchpilot-local")
+    graph.add_argument("--checkpoint-db", type=Path)
+    graph.add_argument("--resume", action="store_true", help="resume an existing SQLite-backed thread")
     decision = graph.add_mutually_exclusive_group()
     decision.add_argument("--approve", action="store_true")
     decision.add_argument("--reject", action="store_true")
@@ -134,39 +136,46 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "graph":
         try:
-            from .graph_workflow import build_apply_graph, initial_state, resume_approval
+            from .graph_workflow import build_apply_graph, build_sqlite_graph, initial_state, pending_interrupts, resume_approval
 
-            graph_app = build_apply_graph()
-            config = {"configurable": {"thread_id": args.thread_id}}
-            first = graph_app.invoke(
-                initial_state(
-                    args.repo,
-                    args.proposal_file,
-                    test_command=args.test_command,
-                    timeout=args.timeout,
-                    recovery_proposal_file=args.recovery_proposal_file,
-                    approve_recovery=args.approve_recovery,
-                ),
-                config=config,
-            )
-            snapshot = graph_app.get_state(config)
-            pending_interrupts = [
-                interrupt
-                for task in snapshot.tasks
-                for interrupt in (getattr(task, "interrupts", ()) or ())
-            ]
-            if pending_interrupts:
-                if args.approve or args.reject:
-                    result = resume_approval(graph_app, config, approved=args.approve)
-                else:
-                    print(json.dumps({"state": first, "interrupts": pending_interrupts}, indent=2, sort_keys=True, default=str))
-                    print("Approval required; graph paused without applying files.")
-                    return 3
+            graph_connection = None
+            if args.checkpoint_db:
+                graph_app, graph_connection = build_sqlite_graph(args.checkpoint_db)
             else:
-                result = first
+                graph_app = build_apply_graph()
+            config = {"configurable": {"thread_id": args.thread_id}}
+            if args.resume:
+                if not (args.approve or args.reject):
+                    raise ValueError("--resume requires --approve or --reject")
+                result = resume_approval(graph_app, config, approved=args.approve)
+            else:
+                first = graph_app.invoke(
+                    initial_state(
+                        args.repo,
+                        args.proposal_file,
+                        test_command=args.test_command,
+                        timeout=args.timeout,
+                        recovery_proposal_file=args.recovery_proposal_file,
+                        approve_recovery=args.approve_recovery,
+                    ),
+                    config=config,
+                )
+                pending = pending_interrupts(graph_app, config)
+                if pending:
+                    if args.approve or args.reject:
+                        result = resume_approval(graph_app, config, approved=args.approve)
+                    else:
+                        print(json.dumps({"state": first, "interrupts": pending}, indent=2, sort_keys=True, default=str))
+                        print("Approval required; graph paused without applying files.")
+                        return 3
+                else:
+                    result = first
         except (EditDenied, PlannerError, UnsafeCommand, RuntimeError, ValueError, OSError) as exc:
             print(f"GRAPH BLOCKED: {exc}")
             return 2
+        finally:
+            if 'graph_connection' in locals() and graph_connection is not None:
+                graph_connection.close()
         print(json.dumps(result, indent=2, sort_keys=True, default=str))
         return 0 if result.get("status") in {"completed", "rejected"} else 1
     if args.command == "apply-proposal":

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional, TypedDict
@@ -108,7 +109,34 @@ def build_apply_graph(checkpointer: Any | None = None) -> Any:
     graph.add_conditional_edges("approval", _route_after_approval, {"apply": "apply", "reject": "reject"})
     graph.add_edge("apply", END)
     graph.add_edge("reject", END)
-    return graph.compile(checkpointer=checkpointer or MemorySaver())
+    return graph.compile(checkpointer=checkpointer if checkpointer is not None else MemorySaver())
+
+
+def build_sqlite_graph(database_path: Path | str) -> tuple[Any, sqlite3.Connection]:
+    """Build a graph backed by a SQLite checkpoint database.
+
+    The caller owns the returned connection and must close it when the process
+    or application shuts down.
+    """
+    try:
+        from langgraph.checkpoint.sqlite import SqliteSaver
+    except ImportError as exc:  # pragma: no cover - exercised when optional extra is absent
+        raise RuntimeError("SQLite persistence is not installed; use pip install -e '.[persistence]'") from exc
+    path = Path(database_path).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(str(path), check_same_thread=False)
+    checkpointer = SqliteSaver(connection)
+    checkpointer.setup()
+    return build_apply_graph(checkpointer=checkpointer), connection
+
+
+def pending_interrupts(graph: Any, config: dict[str, Any]) -> list[Any]:
+    snapshot = graph.get_state(config)
+    return [
+        interrupt
+        for task in snapshot.tasks
+        for interrupt in (getattr(task, "interrupts", ()) or ())
+    ]
 
 
 def initial_state(

@@ -16,6 +16,8 @@ dev = ["pytest>=8.0"]
 llm = ["openai>=1.0"]
 # LangGraph 0.2 is the last compatible line for the project's Python 3.9 runtime.
 graph = ["langgraph>=0.2.74,<0.3"]
+persistence = ["langgraph-checkpoint-sqlite>=2.0.6,<2.1"]
+api = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
 
 [project.scripts]
 patchpilot = "patchpilot.cli:main"

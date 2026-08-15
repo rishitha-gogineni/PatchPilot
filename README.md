@@ -118,9 +118,30 @@ patchpilot graph /tmp/proposal.json --repo /path/to/repository --approve
 ```
 
 The graph pauses before any write and can resume with an approval or rejection
-using a thread ID. Local CLI runs use an in-memory checkpointer; a durable
-checkpointer can be injected when the workflow is hosted in a long-running API
-or worker process.
+using a thread ID. For restart-safe local workflows, install the SQLite and API
+extras:
+
+```bash
+python -m pip install -e ".[graph,persistence,api]"
+patchpilot graph /tmp/proposal.json --repo /path/to/repository \
+  --checkpoint-db .patchpilot/checkpoints.sqlite --thread-id task-1
+patchpilot graph /tmp/proposal.json --repo /path/to/repository \
+  --checkpoint-db .patchpilot/checkpoints.sqlite --thread-id task-1 \
+  --resume --approve
+```
+
+PatchPilot also exposes a small local FastAPI service backed by the same SQLite
+checkpointer:
+
+```bash
+uvicorn patchpilot.api:app_factory --factory --host 127.0.0.1 --port 8000
+```
+
+`POST /v1/workflows` starts a thread and returns its approval interrupt,
+`GET /v1/workflows/{thread_id}` reads checkpointed state, and
+`POST /v1/workflows/{thread_id}/resume` accepts `{ "approved": true }` or
+`{ "approved": false }`. SQLite is intended for local or single-process use;
+use a server-backed checkpointer before running multiple API workers.
 
 The deterministic benchmark uses five small fixture repositories and does not
 call a model. It measures proposal validity, test-pass rate, task success, and
@@ -129,6 +150,6 @@ model and record token usage separately.
 
 ## Roadmap
 
-1. Add a durable checkpointer and API endpoint for cross-process resume.
-2. Add an optional live-model benchmark with token and cost reporting.
+1. Add an optional live-model benchmark with token and cost reporting.
+2. Add a server-backed checkpointer for multi-worker deployments.
 3. Add a lightweight interactive UI after the CLI workflow is stable.
