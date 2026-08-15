@@ -76,6 +76,62 @@ def test_openai_planner_returns_validated_result_without_network() -> None:
     assert result.usage == {"input_tokens": 120, "output_tokens": 40}
 
 
+class RetryableModelError(Exception):
+    status_code = 429
+
+
+class RetryThenSuccessCompletions:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def create(self, **kwargs: object) -> object:
+        self.calls += 1
+        if self.calls == 1:
+            raise RetryableModelError("rate limited")
+        return FakeCompletions().create(**kwargs)
+
+
+def test_model_request_retries_transient_failures() -> None:
+    completions = RetryThenSuccessCompletions()
+    events = []
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    result = OpenAIPlanner(
+        model="test-model",
+        client=client,
+        max_retries=1,
+        backoff_seconds=0,
+        logger=lambda event, **fields: events.append((event, fields)),
+    ).create_plan("fix parser", inspection())
+    assert result.plan.goal == "Fix the parser"
+    assert completions.calls == 2
+    assert any(event == "model_retry_scheduled" for event, _ in events)
+
+
+class FallbackCompletions:
+    def __init__(self) -> None:
+        self.models = []
+
+    def create(self, **kwargs: object) -> object:
+        self.models.append(kwargs["model"])
+        if kwargs["model"] == "primary":
+            raise RetryableModelError("unavailable")
+        return FakeCompletions().create(**kwargs)
+
+
+def test_model_request_uses_configured_fallback() -> None:
+    completions = FallbackCompletions()
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    result = OpenAIPlanner(
+        model="primary",
+        fallback_model="backup",
+        client=client,
+        max_retries=0,
+        backoff_seconds=0,
+    ).create_plan("fix parser", inspection())
+    assert result.model == "backup"
+    assert completions.models == ["primary", "backup"]
+
+
 def test_api_key_is_not_needed_until_live_client_creation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     planner = OpenAIPlanner(client=None)

@@ -102,6 +102,18 @@ patchpilot llm-plan "Fix the failing parser tests" --repo /path/to/repository
 API-key-free mock tests cover the provider and schema boundary. The key is
 needed only for the `llm-plan` command.
 
+Model calls use a bounded timeout and exponential retry policy for transient
+timeouts, connection failures, rate limits, and 5xx responses. Configure an
+optional fallback model when availability matters:
+
+```bash
+patchpilot llm-plan "Fix the failing parser tests" --repo /path/to/repository \
+  --fallback-model gpt-4o-mini --timeout 45 --retries 2
+```
+
+Malformed model output is not retried as a transport failure; it is rejected by
+the schema boundary and remains subject to human approval.
+
 The `propose` command is review-only: it sends only the explicitly named file
 contents, validates the returned path and test command, and prints a unified
 diff. Use `--json` to save a proposal for `apply-proposal`; applying it still
@@ -171,5 +183,5 @@ database, so a request can be correlated with its workflow trace.
 ## Roadmap
 
 1. Add repository-aware retrieval for planner context.
-2. Add retry, timeout, and model-fallback policies for live API failures.
-3. Add authentication and deployment hardening for public API hosting.
+2. Add authentication and deployment hardening for public API hosting.
+3. Add a lightweight interactive UI after the CLI workflow is stable.

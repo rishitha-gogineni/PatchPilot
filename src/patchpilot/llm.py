@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import asdict
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .models import EditProposal, Inspection, ModelPlan, PlannerResult, ProposalResult
 from .retrieval import retrieve_repository_context
@@ -86,9 +87,31 @@ def validate_model_plan(payload: Any, inspection: Inspection) -> ModelPlan:
 class OpenAIPlanner:
     """Generate a JSON plan; it cannot execute tools or edit repositories."""
 
-    def __init__(self, model: str | None = None, client: Any | None = None):
+    def __init__(
+        self,
+        model: str | None = None,
+        client: Any | None = None,
+        *,
+        fallback_model: str | None = None,
+        request_timeout: float = 45.0,
+        max_retries: int = 2,
+        backoff_seconds: float = 0.5,
+        logger: Callable[..., None] | None = None,
+    ):
         self.model = model or os.getenv("PATCHPILOT_MODEL", "gpt-4o-mini")
         self._client = client
+        self.fallback_model = fallback_model or os.getenv("PATCHPILOT_FALLBACK_MODEL")
+        if request_timeout <= 0:
+            raise ValueError("request_timeout must be positive")
+        if max_retries < 0:
+            raise ValueError("max_retries cannot be negative")
+        if backoff_seconds < 0:
+            raise ValueError("backoff_seconds cannot be negative")
+        self.request_timeout = request_timeout
+        self.max_retries = max_retries
+        self.backoff_seconds = backoff_seconds
+        self.logger = logger
+        self.last_model = self.model
 
     @property
     def client(self) -> Any:
@@ -100,8 +123,60 @@ class OpenAIPlanner:
                 from openai import OpenAI
             except ImportError as exc:
                 raise PlannerError("install the optional llm dependency: pip install -e '.[llm]'") from exc
-            self._client = OpenAI(api_key=api_key)
+            self._client = OpenAI(api_key=api_key, timeout=self.request_timeout, max_retries=0)
         return self._client
+
+    @staticmethod
+    def _retryable(exc: Exception) -> bool:
+        status = getattr(exc, "status_code", None)
+        if status in {408, 409, 429, 500, 502, 503, 504}:
+            return True
+        name = type(exc).__name__.lower()
+        return "timeout" in name or "connection" in name
+
+    def complete(self, **request: Any) -> Any:
+        """Call the model with bounded retries and an optional model fallback."""
+        candidates = [self.model]
+        if self.fallback_model and self.fallback_model not in candidates:
+            candidates.append(self.fallback_model)
+        last_error: Exception | None = None
+        for candidate_index, candidate in enumerate(candidates):
+            for attempt in range(self.max_retries + 1):
+                started = time.perf_counter()
+                if self.logger:
+                    self.logger("model_request_started", model=candidate, attempt=attempt + 1)
+                try:
+                    response = self.client.chat.completions.create(model=candidate, **request)
+                    self.last_model = candidate
+                    if self.logger:
+                        self.logger(
+                            "model_request_completed",
+                            model=candidate,
+                            attempt=attempt + 1,
+                            duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                        )
+                    return response
+                except Exception as exc:
+                    last_error = exc
+                    retryable = self._retryable(exc)
+                    if self.logger:
+                        self.logger(
+                            "model_request_failed",
+                            model=candidate,
+                            attempt=attempt + 1,
+                            retryable=retryable,
+                            error=type(exc).__name__,
+                        )
+                    if not retryable or attempt >= self.max_retries:
+                        break
+                    delay = self.backoff_seconds * (2 ** attempt)
+                    if self.logger:
+                        self.logger("model_retry_scheduled", model=candidate, delay_seconds=delay)
+                    if delay:
+                        time.sleep(delay)
+            if candidate_index < len(candidates) - 1 and self.logger:
+                self.logger("model_fallback_selected", model=candidates[candidate_index + 1])
+        raise PlannerError(f"model request failed after retries: {type(last_error).__name__ if last_error else 'unknown'}") from last_error
 
     def create_plan(self, task: str, inspection: Inspection) -> PlannerResult:
         context = build_planner_context(task, inspection)
@@ -111,8 +186,7 @@ class OpenAIPlanner:
             "Do not invent files or commands. You do not edit files or run tools."
         )
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
+            response = self.complete(
                 temperature=0,
                 max_tokens=1000,
                 response_format={"type": "json_object"},
@@ -130,7 +204,7 @@ class OpenAIPlanner:
             "input_tokens": int(getattr(raw_usage, "prompt_tokens", 0) or 0),
             "output_tokens": int(getattr(raw_usage, "completion_tokens", 0) or 0),
         }
-        return PlannerResult(plan=plan, model=self.model, usage=usage)
+        return PlannerResult(plan=plan, model=self.last_model, usage=usage)
 
 
 def plan_to_dict(result: PlannerResult) -> dict[str, Any]:
@@ -193,8 +267,7 @@ def create_edit_proposal(planner: OpenAIPlanner, task: str, inspection: Inspecti
         "Do not run tools or include markdown."
     )
     try:
-        response = planner.client.chat.completions.create(
-            model=planner.model,
+        response = planner.complete(
             temperature=0,
             max_tokens=4000,
             response_format={"type": "json_object"},
@@ -209,4 +282,4 @@ def create_edit_proposal(planner: OpenAIPlanner, task: str, inspection: Inspecti
     original = file_contents[proposal.path]
     if len(original) >= 500 and len(proposal.new_content) < max(200, int(len(original) * 0.5)):
         raise PlannerError("proposal appears truncated; complete-file content is required")
-    return ProposalResult(proposal, planner.model, _usage(response))
+    return ProposalResult(proposal, planner.last_model, _usage(response))

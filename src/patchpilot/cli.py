@@ -46,11 +46,17 @@ def _parser() -> argparse.ArgumentParser:
     ai_plan.add_argument("task")
     ai_plan.add_argument("--repo", type=Path, default=Path.cwd())
     ai_plan.add_argument("--model")
+    ai_plan.add_argument("--fallback-model")
+    ai_plan.add_argument("--timeout", type=float, default=45.0)
+    ai_plan.add_argument("--retries", type=int, default=2)
     propose = subparsers.add_parser("propose", help="generate a review-only edit proposal")
     propose.add_argument("task")
     propose.add_argument("files", nargs="+", help="explicit repository-relative files to send for review")
     propose.add_argument("--repo", type=Path, default=Path.cwd())
     propose.add_argument("--model")
+    propose.add_argument("--fallback-model")
+    propose.add_argument("--timeout", type=float, default=45.0)
+    propose.add_argument("--retries", type=int, default=2)
     propose.add_argument("--json", action="store_true", help="print only the machine-readable proposal JSON")
     apply = subparsers.add_parser("apply-proposal", help="apply a reviewed proposal after explicit approval")
     apply.add_argument("proposal_file", type=Path)
@@ -79,6 +85,9 @@ def _parser() -> argparse.ArgumentParser:
     live_evaluate = subparsers.add_parser("evaluate-live", help="run the opt-in live-model benchmark")
     live_evaluate.add_argument("fixture", type=Path)
     live_evaluate.add_argument("--model")
+    live_evaluate.add_argument("--fallback-model")
+    live_evaluate.add_argument("--timeout", type=float, default=45.0)
+    live_evaluate.add_argument("--retries", type=int, default=2)
     live_evaluate.add_argument("--input-cost-per-million", type=float, default=0.15)
     live_evaluate.add_argument("--output-cost-per-million", type=float, default=0.60)
     live_evaluate.add_argument("--test-timeout", type=float, default=30.0)
@@ -105,15 +114,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{step.order}. {step.action} — {step.rationale}")
         return 0
     if args.command == "llm-plan":
+        logger = JsonlRunLogger.for_repository(args.repo)
         try:
             inspection = inspector.inspect(args.repo)
-            result = OpenAIPlanner(model=args.model).create_plan(args.task, inspection)
+            result = OpenAIPlanner(
+                model=args.model,
+                fallback_model=args.fallback_model,
+                request_timeout=args.timeout,
+                max_retries=args.retries,
+                logger=logger.record,
+            ).create_plan(args.task, inspection)
         except (PlannerError, ValueError) as exc:
+            logger.record("model_plan_blocked", reason=str(exc))
             print(f"LLM PLAN BLOCKED: {exc}")
             return 2
-        JsonlRunLogger.for_repository(args.repo).record(
-            "model_plan_created", model=result.model, **result.usage,
-        )
+        logger.record("model_plan_created", model=result.model, **result.usage)
         print(json.dumps(plan_to_dict(result), indent=2, sort_keys=True))
         print("Approval required before any edit or command execution.")
         return 0
@@ -124,7 +139,17 @@ def main(argv: list[str] | None = None) -> int:
             selected = tuple(args.files)
             contents = {path: inspector.read_file(args.repo, path) for path in selected}
             result = create_edit_proposal(
-                OpenAIPlanner(model=args.model), args.task, inspection, selected, contents,
+                OpenAIPlanner(
+                    model=args.model,
+                    fallback_model=args.fallback_model,
+                    request_timeout=args.timeout,
+                    max_retries=args.retries,
+                    logger=logger.record,
+                ),
+                args.task,
+                inspection,
+                selected,
+                contents,
             )
             diff = preview_edit(args.repo, result.proposal.path, result.proposal.new_content)
             logger.record("edit_proposal_created", model=result.model, path=result.proposal.path, **result.usage)
@@ -239,7 +264,12 @@ def main(argv: list[str] | None = None) -> int:
         try:
             report = evaluate_live_tasks(
                 args.fixture,
-                OpenAIPlanner(model=args.model),
+                OpenAIPlanner(
+                    model=args.model,
+                    fallback_model=args.fallback_model,
+                    request_timeout=args.timeout,
+                    max_retries=args.retries,
+                ),
                 input_cost_per_million=args.input_cost_per_million,
                 output_cost_per_million=args.output_cost_per_million,
                 test_timeout=args.test_timeout,
