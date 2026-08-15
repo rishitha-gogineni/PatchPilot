@@ -156,6 +156,27 @@ uvicorn patchpilot.api:app_factory --factory --host 127.0.0.1 --port 8000
 `{ "approved": false }`. SQLite is intended for local or single-process use;
 use a server-backed checkpointer before running multiple API workers.
 
+### Bounded multi-agent workflow
+
+The optional multi-agent command uses separate planner, retrieval, implementer,
+and reviewer roles. Planner/reviewer roles are read-only; only the executor can
+apply an edit, and the graph pauses for human approval. Reviewer-driven
+revisions are capped at two:
+
+```bash
+patchpilot multi-agent "Fix the failing parser tests" \
+  --repo /path/to/repository \
+  --checkpoint-db .patchpilot/checkpoints.sqlite --thread-id parser-fix
+patchpilot multi-agent "Fix the failing parser tests" \
+  --repo /path/to/repository \
+  --checkpoint-db .patchpilot/checkpoints.sqlite --thread-id parser-fix \
+  --resume --approve
+```
+
+The permissioned tool registry exposes inspection, retrieval, reading, diffing,
+testing, and applying as separate capabilities. No agent receives unrestricted
+shell access.
+
 ### API authentication and deployment
 
 For a public deployment, configure a high-entropy `PATCHPILOT_API_KEY`. The

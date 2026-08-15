@@ -79,6 +79,21 @@ def _parser() -> argparse.ArgumentParser:
     decision = graph.add_mutually_exclusive_group()
     decision.add_argument("--approve", action="store_true")
     decision.add_argument("--reject", action="store_true")
+    multi = subparsers.add_parser("multi-agent", help="run the bounded multi-agent review workflow")
+    multi.add_argument("task")
+    multi.add_argument("--repo", type=Path, default=Path.cwd())
+    multi.add_argument("--test-command")
+    multi.add_argument("--timeout", type=float, default=60.0)
+    multi.add_argument("--max-revisions", type=int, default=2)
+    multi.add_argument("--model")
+    multi.add_argument("--fallback-model")
+    multi.add_argument("--retries", type=int, default=2)
+    multi.add_argument("--thread-id", default="patchpilot-multi-agent")
+    multi.add_argument("--checkpoint-db", type=Path)
+    multi.add_argument("--resume", action="store_true")
+    multi_decision = multi.add_mutually_exclusive_group()
+    multi_decision.add_argument("--approve", action="store_true")
+    multi_decision.add_argument("--reject", action="store_true")
     evaluate = subparsers.add_parser("evaluate", help="run the deterministic coding-task benchmark")
     evaluate.add_argument("fixture", type=Path)
     evaluate.add_argument("--json", action="store_true")
@@ -207,6 +222,65 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         finally:
             if 'graph_connection' in locals() and graph_connection is not None:
+                graph_connection.close()
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+        return 0 if result.get("status") in {"completed", "rejected"} else 1
+    if args.command == "multi-agent":
+        graph_connection = None
+        logger = JsonlRunLogger.for_repository(args.repo)
+        try:
+            from .graph_workflow import pending_interrupts
+            from .multi_agent import (
+                build_multi_agent_graph,
+                build_sqlite_multi_agent_graph,
+                initial_multi_agent_state,
+                openai_agents,
+            )
+            planner = OpenAIPlanner(
+                model=args.model,
+                fallback_model=args.fallback_model,
+                request_timeout=45.0,
+                max_retries=args.retries,
+                logger=logger.record,
+            )
+            agents = openai_agents(planner)
+            if args.checkpoint_db:
+                graph_app, graph_connection = build_sqlite_multi_agent_graph(args.checkpoint_db, agents)
+            else:
+                graph_app = build_multi_agent_graph(agents)
+            config = {"configurable": {"thread_id": args.thread_id}}
+            if args.resume:
+                if not (args.approve or args.reject):
+                    raise ValueError("--resume requires --approve or --reject")
+                from langgraph.types import Command
+                result = graph_app.invoke(Command(resume={"approved": args.approve}), config=config)
+            else:
+                first = graph_app.invoke(
+                    initial_multi_agent_state(
+                        args.repo,
+                        args.task,
+                        test_command=args.test_command,
+                        timeout=args.timeout,
+                        max_revisions=args.max_revisions,
+                    ),
+                    config=config,
+                )
+                pending = pending_interrupts(graph_app, config)
+                if pending:
+                    if args.approve or args.reject:
+                        from langgraph.types import Command
+                        result = graph_app.invoke(Command(resume={"approved": args.approve}), config=config)
+                    else:
+                        print(json.dumps({"state": first, "interrupts": pending}, indent=2, sort_keys=True, default=str))
+                        print("Approval required; multi-agent graph paused without applying files.")
+                        return 3
+                else:
+                    result = first
+        except (PlannerError, UnsafeCommand, RuntimeError, ValueError, OSError) as exc:
+            print(f"MULTI-AGENT BLOCKED: {exc}")
+            return 2
+        finally:
+            if graph_connection is not None:
                 graph_connection.close()
         print(json.dumps(result, indent=2, sort_keys=True, default=str))
         return 0 if result.get("status") in {"completed", "rejected"} else 1
