@@ -86,10 +86,11 @@ captured in `.patchpilot/runs.jsonl`, which is ignored by Git.
 ### Optional model planner
 
 The model planner receives the task, repository markers, detected test
-commands, and a bounded file-name summary. It does not receive source files,
-execute tools, or edit the repository. Its JSON plan is validated before it is
-shown for approval. Install the optional dependency and configure the model
-only when you are ready to make a live API call:
+commands, a bounded file-name summary, and ranked excerpts from relevant safe
+text files. Secret files, ignored directories, and binary files are excluded;
+the planner still cannot execute tools or edit the repository. Its JSON plan is
+validated before it is shown for approval. Install the optional dependency and
+configure the model only when you are ready to make a live API call:
 
 ```bash
 python -m pip install -e ".[llm]"

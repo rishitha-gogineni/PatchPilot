@@ -5,6 +5,7 @@ import pytest
 
 from patchpilot.llm import OpenAIPlanner, PlannerError, build_planner_context, create_edit_proposal, validate_edit_proposal, validate_model_plan
 from patchpilot.models import Inspection
+from patchpilot.retrieval import retrieve_repository_context
 
 
 def inspection() -> Inspection:
@@ -26,6 +27,21 @@ def test_context_is_bounded_and_contains_no_source_content() -> None:
     assert "src/app.py" in context
     assert "detected_test_commands" in context
     assert "source" not in context
+
+
+def test_repository_retrieval_ranks_relevant_code_and_excludes_secrets(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("def parse_port(value):\n    return int(value)\n", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("unrelated prose\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("OPENAI_API_KEY=should-not-be-read\n", encoding="utf-8")
+    results = retrieve_repository_context(
+        tmp_path,
+        "parse port as integer",
+        ("app.py", ".env", "notes.txt"),
+    )
+    assert results
+    assert results[0].path == "app.py"
+    assert "parse_port" in results[0].excerpt
+    assert all(item.path != ".env" for item in results)
 
 
 def test_model_plan_rejects_unknown_files_and_commands() -> None:

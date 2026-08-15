@@ -8,6 +8,7 @@ from dataclasses import asdict
 from typing import Any, Protocol
 
 from .models import EditProposal, Inspection, ModelPlan, PlannerResult, ProposalResult
+from .retrieval import retrieve_repository_context
 
 
 class PlannerError(ValueError):
@@ -19,17 +20,32 @@ class Planner(Protocol):
         ...
 
 
-def build_planner_context(task: str, inspection: Inspection, *, max_files: int = 80) -> str:
-    """Build a bounded context summary; source files and secrets are not sent."""
+def build_planner_context(
+    task: str,
+    inspection: Inspection,
+    *,
+    max_files: int = 80,
+    max_retrieved_files: int = 8,
+    max_chars_per_file: int = 2_500,
+) -> str:
+    """Build a bounded repository summary plus relevant safe code excerpts."""
     if not task.strip():
         raise PlannerError("task cannot be empty")
     files = inspection.files[:max_files]
+    retrieved = retrieve_repository_context(
+        inspection.root,
+        task,
+        files,
+        max_results=max_retrieved_files,
+        max_chars_per_file=max_chars_per_file,
+    )
     return json.dumps({
         "task": task.strip(),
         "project_type": inspection.project_type,
         "repository_markers": list(inspection.markers),
         "files": list(files),
         "files_truncated": len(inspection.files) > max_files,
+        "retrieved_context": [asdict(item) for item in retrieved],
         "detected_test_commands": list(inspection.test_commands),
     }, sort_keys=True)
 
